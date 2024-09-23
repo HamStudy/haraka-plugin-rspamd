@@ -239,7 +239,10 @@ exports.hook_data_post = function (next, connection) {
 
   const start = Date.now();
 
-  const req = http.request(plugin.get_options(connection), (res) => {
+  const opts = plugin.get_options(connection);
+  connection.logdebug(plugin, `sending message to rspamd @ ${opts.host}:${opts.port}${opts.path}`);
+
+  const req = http.request(opts, (res) => {
     let rawData = '';
 
     res.on('data', (chunk) => { rawData += chunk; });
@@ -247,9 +250,11 @@ exports.hook_data_post = function (next, connection) {
     res.on('end', () => {
       if (!connection.transaction) return nextOnce(); //client gone
 
+      connection.logdebug(plugin, `rspamd response: ${res.statusCode}`);
       const r = plugin.parse_response(rawData, connection);
       if (!r || !r.data || !r.log) {
         if (plugin.cfg.defer.error) return nextOnce(DENYSOFT, 'Rspamd scan error');
+        connection.logwarn(plugin, 'no rspamd data');
         return nextOnce();
       }
 
@@ -264,9 +269,11 @@ exports.hook_data_post = function (next, connection) {
       plugin.do_rewrite(connection, r.data);
 
       if (plugin.cfg.soft_reject.enabled && r.data.action === 'soft reject') {
+        connection.logdebug(plugin, 'soft reject');
         nextOnce(DENYSOFT, DSN.sec_unauthorized(smtp_message || plugin.cfg.soft_reject.message, 451));
       }
       else if (plugin.wants_reject(connection, r.data)) {
+        connection.logdebug(plugin, 'wants reject');
         nextOnce(DENY, smtp_message || plugin.cfg.reject.message);
       }
       else {
@@ -274,6 +281,7 @@ exports.hook_data_post = function (next, connection) {
         plugin.do_milter_headers(connection, r.data);
         plugin.add_headers(connection, r.data);
 
+        connection.logdebug(plugin, 'accept');
         nextOnce();
       }
     });
@@ -282,6 +290,7 @@ exports.hook_data_post = function (next, connection) {
   req.on('error', (err) => {
     if (!connection?.transaction) return nextOnce(); // client gone
     connection.transaction.results.add(plugin, { err: err.message});
+    connection.logerror(plugin, `rspamd error: ${err.message}`);
     if (plugin.cfg.defer.error) return nextOnce(DENYSOFT, 'Rspamd scan error');
     nextOnce();
   });
